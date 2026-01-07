@@ -12,11 +12,56 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
-from claude_sessions import ClaudeSessions
+from claude_sessions import ClaudeSessions, Session, MessageRole
 from claude_sessions.export import export_session_markdown
+
+
+def session_to_filename(session: Session, max_length: int = 40) -> str:
+    """
+    Generate a human-readable filename from a session.
+
+    Uses the first user message to create a kebab-case slug,
+    prefixed with the date and session ID snippet.
+
+    Example: 2025-01-05_a1b2c3d4_help-me-fix-the-login-bug.md
+    """
+    # Date prefix
+    if session.start_time:
+        date_str = session.start_time.strftime("%Y-%m-%d")
+    else:
+        date_str = "unknown"
+
+    # Session ID snippet for uniqueness
+    session_prefix = session.session_id[:8]
+
+    # Extract first user message text
+    slug = ""
+    for msg in session.main_thread.messages:
+        if msg.role == MessageRole.USER and msg.text_content:
+            text = msg.text_content.strip()
+            # Strip XML-style metadata tags (e.g., <ide_opened_file>...</ide_opened_file>)
+            text = re.sub(r'<[^>]+>[^<]*</[^>]+>', '', text).strip()
+            if not text:
+                continue  # Skip messages that are only metadata
+            # Convert to kebab-case slug
+            # Lowercase, replace non-alphanumeric with hyphens, collapse multiple hyphens
+            slug = text.lower()
+            slug = re.sub(r'[^a-z0-9]+', '-', slug)
+            slug = re.sub(r'-+', '-', slug)
+            slug = slug.strip('-')
+            # Truncate to max_length, avoiding mid-word cuts
+            if len(slug) > max_length:
+                slug = slug[:max_length].rsplit('-', 1)[0]
+            break
+
+    if slug:
+        return f"{date_str}_{session_prefix}_{slug}.md"
+    else:
+        return f"{date_str}_{session_prefix}.md"
 
 
 def main():
@@ -46,7 +91,7 @@ def main():
         help="Exclude sub-agent conversations from output"
     )
     parser.add_argument(
-        "--include-metadata",
+        "-m", "--include-metadata",
         action="store_true",
         help="Include working directory and git branch per message"
     )
@@ -81,13 +126,7 @@ def main():
         project_dir.mkdir(exist_ok=True)
 
         for session in project.sessions.values():
-            # Generate filename: {session_id_prefix}_{date}.md
-            if session.start_time:
-                date_str = session.start_time.strftime("%Y-%m-%d")
-            else:
-                date_str = "unknown"
-
-            filename = f"{session.session_id[:8]}_{date_str}.md"
+            filename = session_to_filename(session)
             output_path = project_dir / filename
 
             try:
