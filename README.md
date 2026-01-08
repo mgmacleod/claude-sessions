@@ -527,6 +527,481 @@ for msg in messages[:5]:
 
 ---
 
+## Realtime Monitoring
+
+The `claude_sessions.realtime` module enables monitoring Claude Code sessions as they happen, emitting events for messages, tool calls, and session lifecycle changes.
+
+### Quick Start
+
+```python
+from claude_sessions.realtime import SessionWatcher
+
+watcher = SessionWatcher()
+
+@watcher.on("message")
+def on_message(event):
+    print(f"{event.message.role}: {event.message.text_content[:80]}")
+
+@watcher.on("tool_use")
+def on_tool(event):
+    print(f"  → {event.tool_name}")
+
+watcher.start()  # Blocks until Ctrl+C
+```
+
+Or use the CLI:
+
+```bash
+# Install with realtime dependencies
+pip install -e ".[realtime]"
+
+# Watch all sessions
+claude-sessions watch
+
+# JSON output for piping
+claude-sessions watch --format json | jq .
+```
+
+---
+
+### Event Types
+
+All events are immutable frozen dataclasses with these common attributes:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `timestamp` | `datetime` | When the event occurred |
+| `session_id` | `str` | Session UUID |
+| `event_type` | `str` | Event type string |
+| `agent_id` | `str \| None` | Sub-agent ID if from sidechain |
+
+#### Message Events
+
+| Event | Description | Key Attributes |
+|-------|-------------|----------------|
+| `MessageEvent` | New message parsed | `message: Message` |
+| `ToolUseEvent` | Tool invoked | `tool_name`, `tool_category`, `tool_input`, `tool_use_id` |
+| `ToolResultEvent` | Tool result received | `tool_use_id`, `content`, `is_error` |
+| `ToolCallCompletedEvent` | Tool use matched with result | `tool_call: ToolCall`, `tool_name`, `is_error`, `duration` |
+| `ErrorEvent` | Parse error | `error_message`, `raw_entry` |
+
+#### Session Lifecycle Events
+
+| Event | Description | Key Attributes |
+|-------|-------------|----------------|
+| `SessionStartEvent` | New session file detected | `project_slug`, `file_path`, `cwd` |
+| `SessionIdleEvent` | Session went idle | `idle_since: datetime` |
+| `SessionResumeEvent` | Idle session became active | `idle_duration: timedelta` |
+| `SessionEndEvent` | Session ended | `reason`, `idle_duration`, `message_count`, `tool_count` |
+
+---
+
+### SessionWatcher
+
+High-level API for monitoring all sessions in `~/.claude/projects/`.
+
+```python
+from claude_sessions.realtime import SessionWatcher, WatcherConfig
+from datetime import timedelta
+
+# Custom configuration
+config = WatcherConfig(
+    poll_interval=0.5,                    # Check for changes every 500ms
+    idle_timeout=timedelta(minutes=2),    # Mark idle after 2min inactivity
+    end_timeout=timedelta(minutes=5),     # End session after 5min idle
+    process_existing=True,                # Process existing files on startup
+    emit_session_events=True,             # Emit session_start/end/idle events
+)
+
+watcher = SessionWatcher(config=config)
+
+# Register handlers via decorator
+@watcher.on("session_start")
+def on_start(event):
+    print(f"New session: {event.session_id[:8]} in {event.project_slug}")
+
+@watcher.on("message")
+def on_message(event):
+    print(f"[{event.message.role}] {event.message.text_content[:100]}")
+
+# Or register via method
+def on_tool(event):
+    print(f"Tool: {event.tool_name}")
+
+watcher.on("tool_use", on_tool)
+
+# Wildcard handler for all events
+@watcher.on_any
+def on_any(event):
+    print(f"Event: {event.event_type}")
+
+# Run methods
+watcher.start()              # Block until Ctrl+C
+watcher.run_for(seconds=60)  # Run for limited time
+watcher.stop()               # Stop from another thread
+
+# Context manager
+with SessionWatcher() as watcher:
+    watcher.run_for(10)
+```
+
+#### WatcherConfig Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `base_path` | `Path` | `~/.claude` | Base Claude directory |
+| `poll_interval` | `float` | `0.5` | Seconds between file checks |
+| `idle_timeout` | `timedelta` | `2 min` | Inactivity before session is idle |
+| `end_timeout` | `timedelta` | `5 min` | Idle duration before session ends |
+| `process_existing` | `bool` | `True` | Process existing files on startup |
+| `emit_session_events` | `bool` | `True` | Emit lifecycle events |
+| `truncate_inputs` | `bool` | `True` | Truncate large tool inputs |
+| `max_input_length` | `int` | `1024` | Max input length when truncating |
+| `state_file` | `Path` | `None` | Path for state persistence |
+| `save_interval` | `timedelta` | `30 sec` | Auto-save interval |
+
+---
+
+### AsyncSessionWatcher
+
+Async API for integration with asyncio applications.
+
+```python
+import asyncio
+from claude_sessions.realtime import AsyncSessionWatcher
+
+async def main():
+    # Async iterator pattern
+    async with AsyncSessionWatcher() as watcher:
+        async for event in watcher.events():
+            print(f"{event.event_type}: {event.session_id[:8]}")
+
+asyncio.run(main())
+```
+
+Or with decorators (supports both sync and async handlers):
+
+```python
+async def main():
+    watcher = AsyncSessionWatcher()
+
+    @watcher.on("message")
+    async def on_message(event):
+        await process_message(event)
+
+    @watcher.on("tool_use")
+    def on_tool(event):  # Sync handler also works
+        print(event.tool_name)
+
+    await watcher.start()
+
+asyncio.run(main())
+```
+
+---
+
+### Live Sessions
+
+Track mutable session state for tool call pairing and statistics.
+
+```python
+from claude_sessions.realtime import (
+    SessionWatcher,
+    LiveSessionConfig,
+    RetentionPolicy,
+)
+
+# Enable live session tracking
+watcher = SessionWatcher(live_sessions=True)
+
+@watcher.on("tool_call_completed")
+def on_complete(event):
+    # Emitted when tool_use is matched with tool_result
+    print(f"Tool {event.tool_name} completed, error={event.is_error}")
+    if event.duration:
+        print(f"  Duration: {event.duration}")
+
+@watcher.on("session_end")
+def on_end(event):
+    session = watcher.live_sessions.get_session(event.session_id)
+    if session:
+        print(f"Session stats: {session.message_count} messages")
+        # Convert to immutable Session for export
+        immutable = session.to_session()
+```
+
+#### Retention Policies
+
+Control memory usage for long-running sessions:
+
+```python
+# Keep all messages (default)
+config = LiveSessionConfig(retention_policy=RetentionPolicy.FULL)
+
+# Keep last 100 messages per thread
+config = LiveSessionConfig(
+    retention_policy=RetentionPolicy.SLIDING,
+    max_messages=100,
+)
+
+# Only track counters, don't store messages
+config = LiveSessionConfig(retention_policy=RetentionPolicy.NONE)
+
+watcher = SessionWatcher(live_sessions=True, live_config=config)
+```
+
+#### LiveSession Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `session_id` | `str` | Session UUID |
+| `project_slug` | `str` | Project directory |
+| `message_count` | `int` | Total messages |
+| `tool_call_count` | `int` | Total tool calls |
+| `start_time` | `datetime` | When session started |
+| `last_activity` | `datetime` | Last event time |
+| `is_idle` | `bool` | Currently idle |
+| `to_session()` | `Session` | Convert to immutable |
+
+---
+
+### Filtering Events
+
+Compose filters to selectively process events.
+
+```python
+from claude_sessions.realtime import SessionWatcher, filters, FilterPipeline
+
+watcher = SessionWatcher()
+
+# Filter functions return predicates
+file_ops = filters.tool_category("file_read", "file_write")
+my_project = filters.project("my-project")
+
+# Combine with logical operators
+combined = filters.and_(my_project, file_ops)
+
+# Use with FilterPipeline for handler registration
+pipeline = FilterPipeline(combined)
+
+@pipeline.on("tool_use")
+def on_file_op(event):
+    print(f"File operation: {event.tool_name}")
+
+# Route events through pipeline
+@watcher.on_any
+def route(event):
+    pipeline.process(event)
+
+watcher.start()
+```
+
+#### Available Filters
+
+| Filter | Description | Example |
+|--------|-------------|---------|
+| `project(slug)` | Match project slug | `filters.project("myproj")` |
+| `session(id)` | Match session ID | `filters.session("abc-123")` |
+| `session_prefix(prefix)` | Match session ID prefix | `filters.session_prefix("abc")` |
+| `event_type(*types)` | Match event types | `filters.event_type("message", "tool_use")` |
+| `tool_name(*names)` | Match tool names | `filters.tool_name("Read", "Write")` |
+| `tool_category(*cats)` | Match tool categories | `filters.tool_category("file_write")` |
+| `agent()` | Match sub-agent events | `filters.agent()` |
+| `main_thread()` | Match main thread only | `filters.main_thread()` |
+| `has_error()` | Match error events/results | `filters.has_error()` |
+| `role(role)` | Match message role | `filters.role("user")` |
+
+#### Combinators
+
+| Combinator | Description | Example |
+|------------|-------------|---------|
+| `and_(*filters)` | All filters must match | `filters.and_(f1, f2)` |
+| `or_(*filters)` | Any filter must match | `filters.or_(f1, f2)` |
+| `not_(filter)` | Invert filter | `filters.not_(f1)` |
+| `always()` | Always matches | `filters.always()` |
+| `never()` | Never matches | `filters.never()` |
+
+---
+
+### Metrics Collection
+
+Track Prometheus-compatible metrics.
+
+```python
+from claude_sessions.realtime import SessionWatcher, MetricsCollector
+
+watcher = SessionWatcher()
+metrics = MetricsCollector()
+
+# Route all events to metrics
+watcher.on_any(metrics.handle_event)
+
+# Access metrics
+print(f"Total messages: {metrics.messages_total.get()}")
+print(f"Messages/min: {metrics.messages_per_minute}")
+print(f"Tool breakdown: {metrics.tool_usage_breakdown}")
+print(f"Active sessions: {metrics.active_sessions.get()}")
+
+# Export for Prometheus
+print(metrics.to_prometheus_text())
+```
+
+#### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `messages_total` | Counter | Total messages processed |
+| `tool_calls_total` | Counter | Total tool invocations |
+| `tool_errors_total` | Counter | Tool calls with errors |
+| `session_starts_total` | Counter | Sessions started |
+| `session_ends_total` | Counter | Sessions ended |
+| `active_sessions` | Gauge | Currently active sessions |
+| `tool_duration_seconds` | Histogram | Tool execution time distribution |
+
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `messages_per_minute` | `float` | Message rate |
+| `tools_per_minute` | `float` | Tool call rate |
+| `tool_usage_breakdown` | `Dict[str, int]` | Calls per tool |
+| `error_rate` | `float` | Error ratio (0-1) |
+
+#### Prometheus Server
+
+Run a standalone HTTP server for metrics scraping:
+
+```python
+from claude_sessions.realtime import SessionWatcher, MetricsCollector, PrometheusServer
+
+watcher = SessionWatcher()
+metrics = MetricsCollector()
+watcher.on_any(metrics.handle_event)
+
+# Start HTTP server on port 9090
+server = PrometheusServer(metrics, port=9090)
+server.start()
+
+print(f"Metrics available at {server.url}/metrics")
+watcher.start()
+```
+
+---
+
+### Webhooks
+
+Send events to HTTP endpoints with batching and retry.
+
+```python
+from claude_sessions.realtime import SessionWatcher, WebhookDispatcher, WebhookConfig
+
+watcher = SessionWatcher()
+
+# Configure webhook
+config = WebhookConfig(
+    url="http://localhost:8080/events",
+    headers={"Authorization": "Bearer token"},
+    batch_size=10,           # Send in batches of 10
+    batch_timeout=5.0,       # Or every 5 seconds
+    max_retries=3,           # Retry failed requests
+    retry_backoff=1.0,       # Exponential backoff base
+)
+
+dispatcher = WebhookDispatcher()
+dispatcher.add_webhook(config)
+dispatcher.start()
+
+# Route events to webhook
+watcher.on_any(dispatcher.handle_event)
+watcher.start()
+```
+
+---
+
+### State Persistence
+
+Resume watching from where you left off after restart.
+
+```python
+from pathlib import Path
+from claude_sessions.realtime import SessionWatcher, WatcherConfig
+
+config = WatcherConfig(
+    state_file=Path("~/.cache/claude-watcher-state.json").expanduser(),
+    save_interval=timedelta(seconds=30),
+)
+
+watcher = SessionWatcher(config=config)
+# State auto-saves periodically and restores on startup
+watcher.start()
+```
+
+---
+
+### CLI Reference
+
+The `claude-sessions` command provides subcommands for monitoring:
+
+#### watch
+
+Monitor sessions in real-time:
+
+```bash
+# Basic usage
+claude-sessions watch
+
+# Filter by project
+claude-sessions watch --project myproject
+
+# Filter by tool category
+claude-sessions watch --tool-category file_write --tool-category bash
+
+# Filter by event type
+claude-sessions watch --event-type message --event-type tool_use
+
+# Output formats
+claude-sessions watch --format plain   # Human-readable (default)
+claude-sessions watch --format json    # JSON lines
+claude-sessions watch --format compact # Minimal one-line
+
+# With Prometheus metrics
+claude-sessions watch --metrics --metrics-port 9090
+
+# With webhooks
+claude-sessions watch --webhook http://localhost:8080/events
+
+# Resumable watching
+claude-sessions watch --state-file ~/.cache/watcher-state.json
+```
+
+#### watch Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--project SLUG` | `-p` | Filter by project slug (partial match) |
+| `--session ID` | `-s` | Filter by session ID (partial match) |
+| `--tool NAME` | `-t` | Filter by tool name (repeatable) |
+| `--tool-category CAT` | | Filter by category (repeatable) |
+| `--event-type TYPE` | `-e` | Filter by event type (repeatable) |
+| `--errors-only` | | Only show errors |
+| `--format FMT` | `-f` | Output format: plain, json, compact |
+| `--no-color` | | Disable colored output |
+| `--quiet` | `-q` | Suppress headers/summaries |
+| `--metrics` | | Enable Prometheus endpoint |
+| `--metrics-port PORT` | | Metrics port (default: 9090) |
+| `--webhook URL` | | Send events to webhook (repeatable) |
+| `--state-file PATH` | | Enable state persistence |
+
+#### metrics
+
+Run a standalone Prometheus metrics server:
+
+```bash
+claude-sessions metrics --port 9090
+```
+
+---
+
 ## License
 
 MIT

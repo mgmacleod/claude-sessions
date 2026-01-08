@@ -20,9 +20,15 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.scripts]
+claude-sessions = "claude_sessions.realtime.cli:main"
+
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
-all = ["pandas>=2.0"]
+realtime = ["watchdog>=3.0"]
+webhook = ["requests>=2.28"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+all = ["pandas>=2.0", "watchdog>=3.0", "requests>=2.28"]
 
 [project.urls]
 "Homepage" = "https://github.com/yourusername/claude-sessions"
