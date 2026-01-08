@@ -110,6 +110,22 @@ from .state import (
     StatePersistence,
 )
 
+# Phase 5: Integrations
+from .formatters import (
+    OutputFormatter,
+    PlainFormatter,
+    JsonFormatter,
+    CompactFormatter,
+    get_formatter,
+)
+from .prometheus_server import PrometheusServer
+from .webhook import (
+    WebhookDispatcher,
+    WebhookConfig,
+    WebhookPayload,
+    serialize_event,
+)
+
 __all__ = [
     # Event types
     "SessionEvent",
@@ -155,4 +171,17 @@ __all__ = [
     "WatcherState",
     "FilePosition",
     "StatePersistence",
+    # Formatters (Phase 5)
+    "OutputFormatter",
+    "PlainFormatter",
+    "JsonFormatter",
+    "CompactFormatter",
+    "get_formatter",
+    # Prometheus server (Phase 5)
+    "PrometheusServer",
+    # Webhook dispatcher (Phase 5)
+    "WebhookDispatcher",
+    "WebhookConfig",
+    "WebhookPayload",
+    "serialize_event",
 ]
