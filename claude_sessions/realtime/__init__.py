@@ -32,6 +32,41 @@ Example usage (high-level with SessionWatcher):
         print(f"{event.message.role}: {event.message.text_content[:80]}")
 
     watcher.start()  # Blocks until Ctrl+C
+
+Example usage (async with AsyncSessionWatcher):
+    import asyncio
+    from claude_sessions.realtime import AsyncSessionWatcher
+
+    async def main():
+        async with AsyncSessionWatcher() as watcher:
+            async for event in watcher.events():
+                print(f"{event.event_type}: {event.session_id[:8]}")
+
+    asyncio.run(main())
+
+Example usage (with filters and metrics):
+    from claude_sessions.realtime import SessionWatcher, MetricsCollector, filters
+
+    watcher = SessionWatcher()
+    metrics = MetricsCollector()
+
+    # Route all events to metrics
+    watcher.on_any(metrics.handle_event)
+
+    # Filter for file operations
+    file_ops = filters.FilterPipeline(
+        filters.tool_category("file_read", "file_write")
+    )
+
+    @file_ops.on("tool_use")
+    def on_file_tool(event):
+        print(f"File: {event.tool_name}")
+
+    @watcher.on_any
+    def route(event):
+        file_ops.process(event)
+
+    watcher.start()
 """
 
 from .events import (
@@ -57,6 +92,22 @@ from .live import (
     LiveSessionManager,
     LiveSessionConfig,
     RetentionPolicy,
+)
+
+# Phase 4: Advanced features
+from .async_watcher import AsyncSessionWatcher
+from . import filters
+from .filters import FilterPipeline, EventFilter
+from .metrics import (
+    MetricsCollector,
+    Counter,
+    Gauge,
+    Histogram,
+)
+from .state import (
+    WatcherState,
+    FilePosition,
+    StatePersistence,
 )
 
 __all__ = [
@@ -89,4 +140,19 @@ __all__ = [
     "LiveSessionManager",
     "LiveSessionConfig",
     "RetentionPolicy",
+    # Async watcher (Phase 4)
+    "AsyncSessionWatcher",
+    # Filters (Phase 4)
+    "filters",
+    "FilterPipeline",
+    "EventFilter",
+    # Metrics (Phase 4)
+    "MetricsCollector",
+    "Counter",
+    "Gauge",
+    "Histogram",
+    # State persistence (Phase 4)
+    "WatcherState",
+    "FilePosition",
+    "StatePersistence",
 ]

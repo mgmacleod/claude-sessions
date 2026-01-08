@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .live import LiveSessionConfig, LiveSessionManager
+    from .state import StatePersistence
 
 from .emitter import EventEmitter
 from .events import (
@@ -69,6 +70,9 @@ class WatcherConfig:
         emit_session_events: Whether to emit session start/end/idle events
         truncate_inputs: Whether to truncate large tool inputs
         max_input_length: Max length for tool input truncation
+        state_file: Path to save/load watcher state for resumable watching.
+            If None (default), state is not persisted.
+        save_interval: How often to auto-save state when state_file is set.
     """
 
     base_path: Path = field(default_factory=lambda: Path.home() / ".claude")
@@ -79,6 +83,8 @@ class WatcherConfig:
     emit_session_events: bool = True
     truncate_inputs: bool = True
     max_input_length: int = 1024
+    state_file: Optional[Path] = None
+    save_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
 
     @property
     def projects_path(self) -> Path:
@@ -271,6 +277,15 @@ class SessionWatcher:
             from .live import LiveSessionManager
             self._live_manager = LiveSessionManager(default_config=live_config)
 
+        # State persistence (optional)
+        self._persistence: Optional["StatePersistence"] = None
+        if self._config.state_file is not None:
+            from .state import StatePersistence
+            self._persistence = StatePersistence(
+                state_file=self._config.state_file,
+                save_interval=self._config.save_interval,
+            )
+
         # Watchdog components
         self._observer: Optional[Any] = None
         self._handler: Optional[SessionFileHandler] = None
@@ -460,6 +475,10 @@ class SessionWatcher:
         self._running = True
         self._stop_event.clear()
 
+        # Start state persistence if configured
+        if self._persistence is not None:
+            self._persistence.start()
+
         # Set up watchdog if available
         projects_path = self._config.projects_path
         if WATCHDOG_AVAILABLE and projects_path.exists():
@@ -486,6 +505,10 @@ class SessionWatcher:
 
     def _stop_watching(self) -> None:
         """Clean up file watching."""
+        # Stop state persistence (does final save)
+        if self._persistence is not None:
+            self._persistence.stop()
+
         if self._observer is not None:
             self._observer.stop()
             self._observer.join(timeout=5.0)
@@ -598,6 +621,10 @@ class SessionWatcher:
         """
         tailer = JSONLTailer(file_path)
 
+        # Restore position from persisted state if available
+        if self._persistence is not None:
+            self._persistence.apply_to_tailer(tailer)
+
         tracked = TrackedSession(
             session_id=session_id,
             project_slug=project_slug,
@@ -698,6 +725,12 @@ class SessionWatcher:
         # Update activity if we had new data
         if had_activity:
             was_idle = tracked.update_activity()
+
+            # Save tailer positions for resumability
+            if self._persistence is not None:
+                self._persistence.update_from_tailer(tracked.tailer)
+                for tailer in tracked.agent_files.values():
+                    self._persistence.update_from_tailer(tailer)
 
             # Emit resume event if coming back from idle
             if was_idle and tracked.idle_since:
