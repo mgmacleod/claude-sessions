@@ -44,6 +44,7 @@ from .events import (
     SessionEndEvent,
     SessionIdleEvent,
     SessionResumeEvent,
+    ToolCallCompletedEvent,
     SessionEventType,
     truncate_tool_input,
 )
@@ -51,6 +52,12 @@ from .tailer import JSONLTailer, TailerState, MultiFileTailer
 from .parser import IncrementalParser
 from .emitter import EventEmitter
 from .watcher import SessionWatcher, WatcherConfig, TrackedSession
+from .live import (
+    LiveSession,
+    LiveSessionManager,
+    LiveSessionConfig,
+    RetentionPolicy,
+)
 
 __all__ = [
     # Event types
@@ -63,6 +70,7 @@ __all__ = [
     "SessionEndEvent",
     "SessionIdleEvent",
     "SessionResumeEvent",
+    "ToolCallCompletedEvent",
     "SessionEventType",
     # Utilities
     "truncate_tool_input",
@@ -76,4 +84,9 @@ __all__ = [
     "SessionWatcher",
     "WatcherConfig",
     "TrackedSession",
+    # Live state management (Phase 3)
+    "LiveSession",
+    "LiveSessionManager",
+    "LiveSessionConfig",
+    "RetentionPolicy",
 ]

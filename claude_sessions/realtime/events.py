@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Protocol, Union
 
-from ..models import Message
+from ..models import Message, ToolCall
 
 
 class SessionEvent(Protocol):
@@ -209,6 +209,50 @@ class SessionResumeEvent:
     event_type: str = field(default="session_resume", repr=False)
 
 
+@dataclass(frozen=True)
+class ToolCallCompletedEvent:
+    """Emitted when a tool use is matched with its result.
+
+    This event contains the complete ToolCall pair, making it easy
+    to analyze completed tool operations. It is emitted by the
+    LiveSessionManager when a ToolResultEvent matches a pending
+    ToolUseEvent.
+
+    Attributes:
+        timestamp: When the pairing was detected
+        session_id: UUID of the session
+        tool_call: The complete ToolCall with use and result
+        agent_id: Agent ID if from a sub-agent, None for main thread
+        event_type: Always "tool_call_completed"
+    """
+
+    timestamp: datetime
+    session_id: str
+    tool_call: ToolCall
+    agent_id: Optional[str] = None
+    event_type: str = field(default="tool_call_completed", repr=False)
+
+    @property
+    def tool_name(self) -> str:
+        """Name of the tool that was called."""
+        return self.tool_call.tool_name
+
+    @property
+    def is_error(self) -> bool:
+        """Whether the tool execution resulted in an error."""
+        return self.tool_call.is_error
+
+    @property
+    def duration(self) -> Optional[timedelta]:
+        """Time between tool use and result, if both have timestamps."""
+        if self.tool_call.request_message and self.tool_call.response_message:
+            return (
+                self.tool_call.response_message.timestamp
+                - self.tool_call.request_message.timestamp
+            )
+        return None
+
+
 # Type alias for all event types
 SessionEventType = Union[
     MessageEvent,
@@ -219,6 +263,7 @@ SessionEventType = Union[
     SessionEndEvent,
     SessionIdleEvent,
     SessionResumeEvent,
+    ToolCallCompletedEvent,
 ]
 
 

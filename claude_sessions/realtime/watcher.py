@@ -25,7 +25,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .live import LiveSessionConfig, LiveSessionManager
 
 from .emitter import EventEmitter
 from .events import (
@@ -34,6 +37,7 @@ from .events import (
     SessionIdleEvent,
     SessionResumeEvent,
     SessionStartEvent,
+    ToolCallCompletedEvent,
 )
 from .parser import IncrementalParser
 from .tailer import JSONLTailer
@@ -220,13 +224,33 @@ class SessionWatcher:
                 print(event)
 
             watcher.run_for(seconds=60)
+
+    Example (with live session state):
+        watcher = SessionWatcher(live_sessions=True)
+
+        @watcher.on("session_end")
+        def on_end(event):
+            session = watcher.live_sessions.get_session(event.session_id)
+            if session:
+                immutable = session.to_session()
+                print(f"Session had {session.message_count} messages")
     """
 
-    def __init__(self, config: Optional[WatcherConfig] = None):
+    def __init__(
+        self,
+        config: Optional[WatcherConfig] = None,
+        live_sessions: bool = False,
+        live_config: Optional["LiveSessionConfig"] = None,
+    ):
         """Initialize the session watcher.
 
         Args:
             config: Configuration options (uses defaults if None)
+            live_sessions: If True, enable live session state tracking.
+                When enabled, the watcher maintains a LiveSessionManager
+                that accumulates message history and pairs tool calls.
+            live_config: Configuration for live sessions. Only used if
+                live_sessions=True. Uses defaults if None.
         """
         self._config = config or WatcherConfig()
         self._emitter = EventEmitter()
@@ -240,6 +264,12 @@ class SessionWatcher:
 
         # File path to session_id mapping
         self._file_to_session: Dict[Path, str] = {}
+
+        # Live session management (optional)
+        self._live_manager: Optional["LiveSessionManager"] = None
+        if live_sessions:
+            from .live import LiveSessionManager
+            self._live_manager = LiveSessionManager(default_config=live_config)
 
         # Watchdog components
         self._observer: Optional[Any] = None
@@ -292,6 +322,25 @@ class SessionWatcher:
             True if handler was found and removed.
         """
         return self._emitter.off(event_type, handler)
+
+    @property
+    def live_sessions(self) -> Optional["LiveSessionManager"]:
+        """Access the live session manager.
+
+        Returns:
+            LiveSessionManager if live_sessions=True was passed to __init__,
+            None otherwise.
+
+        Example:
+            watcher = SessionWatcher(live_sessions=True)
+            watcher.start_background()
+
+            # Later...
+            session = watcher.live_sessions.get_session("abc-123")
+            if session:
+                print(f"Messages: {session.message_count}")
+        """
+        return self._live_manager
 
     def start(self) -> None:
         """Start watching for sessions (blocking).
@@ -674,6 +723,21 @@ class SessionWatcher:
                     tracked.cwd = getattr(event.message, "cwd", None)
             elif event.event_type == "tool_use":
                 tracked.tool_count += 1
+
+            # Route to live manager if enabled
+            if self._live_manager is not None:
+                completed_tool_call = self._live_manager.handle_event(event)
+
+                # Emit ToolCallCompletedEvent when a tool call is paired
+                if completed_tool_call is not None:
+                    self._emitter.emit(
+                        ToolCallCompletedEvent(
+                            timestamp=datetime.now(timezone.utc),
+                            session_id=tracked.session_id,
+                            tool_call=completed_tool_call,
+                            agent_id=getattr(event, "agent_id", None),
+                        )
+                    )
 
             # Emit the event
             self._emitter.emit(event)
