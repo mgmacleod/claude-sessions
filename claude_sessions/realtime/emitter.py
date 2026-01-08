@@ -22,7 +22,16 @@ logger = logging.getLogger(__name__)
 
 
 # Event types that can be subscribed to
-EventType = Literal["message", "tool_use", "tool_result", "error"]
+EventType = Literal[
+    "message",
+    "tool_use",
+    "tool_result",
+    "error",
+    "session_start",
+    "session_end",
+    "session_idle",
+    "session_resume",
+]
 
 # Handler function type
 EventHandler = Callable[[SessionEventType], None]

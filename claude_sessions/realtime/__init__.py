@@ -3,7 +3,7 @@
 This module provides components for tailing Claude Code session files
 and emitting events as new messages and tool calls appear.
 
-Example usage:
+Example usage (low-level):
     from claude_sessions.realtime import JSONLTailer, IncrementalParser, EventEmitter
 
     tailer = JSONLTailer(session_file)
@@ -17,6 +17,21 @@ Example usage:
     for entry in tailer.read_new():
         for event in parser.parse_entry(entry):
             emitter.emit(event)
+
+Example usage (high-level with SessionWatcher):
+    from claude_sessions.realtime import SessionWatcher
+
+    watcher = SessionWatcher()
+
+    @watcher.on("session_start")
+    def on_start(event):
+        print(f"New session: {event.session_id[:8]}")
+
+    @watcher.on("message")
+    def on_message(event):
+        print(f"{event.message.role}: {event.message.text_content[:80]}")
+
+    watcher.start()  # Blocks until Ctrl+C
 """
 
 from .events import (
@@ -25,12 +40,17 @@ from .events import (
     ToolUseEvent,
     ToolResultEvent,
     ErrorEvent,
+    SessionStartEvent,
+    SessionEndEvent,
+    SessionIdleEvent,
+    SessionResumeEvent,
     SessionEventType,
     truncate_tool_input,
 )
 from .tailer import JSONLTailer, TailerState, MultiFileTailer
 from .parser import IncrementalParser
 from .emitter import EventEmitter
+from .watcher import SessionWatcher, WatcherConfig, TrackedSession
 
 __all__ = [
     # Event types
@@ -39,6 +59,10 @@ __all__ = [
     "ToolUseEvent",
     "ToolResultEvent",
     "ErrorEvent",
+    "SessionStartEvent",
+    "SessionEndEvent",
+    "SessionIdleEvent",
+    "SessionResumeEvent",
     "SessionEventType",
     # Utilities
     "truncate_tool_input",
@@ -48,4 +72,8 @@ __all__ = [
     "MultiFileTailer",
     "IncrementalParser",
     "EventEmitter",
+    # Session watcher (Phase 2)
+    "SessionWatcher",
+    "WatcherConfig",
+    "TrackedSession",
 ]

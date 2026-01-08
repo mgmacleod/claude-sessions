@@ -6,8 +6,9 @@ common protocol for type checking.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, Optional, Protocol, Union
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional, Protocol, Union
 
 from ..models import Message
 
@@ -117,8 +118,108 @@ class ErrorEvent:
     event_type: str = field(default="error", repr=False)
 
 
+@dataclass(frozen=True)
+class SessionStartEvent:
+    """Emitted when a new session file is detected.
+
+    Attributes:
+        timestamp: When the session was detected
+        session_id: UUID of the session (derived from filename)
+        project_slug: The project directory name
+        file_path: Path to the session file
+        cwd: Working directory if known from first message
+        agent_id: Always None for session events
+        event_type: Always "session_start"
+    """
+
+    timestamp: datetime
+    session_id: str
+    project_slug: str
+    file_path: Path
+    cwd: Optional[str] = None
+    agent_id: Optional[str] = None
+    event_type: str = field(default="session_start", repr=False)
+
+
+@dataclass(frozen=True)
+class SessionEndEvent:
+    """Emitted when a session is determined to have ended.
+
+    End detection uses heuristics:
+    - Idle timeout exceeded
+    - File unchanged and no Claude processes
+    - Explicit detection (future)
+
+    Attributes:
+        timestamp: When the end was detected
+        session_id: UUID of the session
+        reason: Why session was considered ended
+        idle_duration: How long session was idle (if idle timeout)
+        message_count: Total messages in session
+        tool_count: Total tool calls in session
+        agent_id: Always None for session events
+        event_type: Always "session_end"
+    """
+
+    timestamp: datetime
+    session_id: str
+    reason: Literal["idle_timeout", "file_unchanged", "process_exit", "manual"]
+    idle_duration: Optional[timedelta] = None
+    message_count: int = 0
+    tool_count: int = 0
+    agent_id: Optional[str] = None
+    event_type: str = field(default="session_end", repr=False)
+
+
+@dataclass(frozen=True)
+class SessionIdleEvent:
+    """Emitted when a session goes idle (may resume later).
+
+    Attributes:
+        timestamp: When idle state was detected
+        session_id: UUID of the session
+        idle_since: When last activity occurred
+        agent_id: Always None for session events
+        event_type: Always "session_idle"
+    """
+
+    timestamp: datetime
+    session_id: str
+    idle_since: datetime
+    agent_id: Optional[str] = None
+    event_type: str = field(default="session_idle", repr=False)
+
+
+@dataclass(frozen=True)
+class SessionResumeEvent:
+    """Emitted when an idle session becomes active again.
+
+    Attributes:
+        timestamp: When activity resumed
+        session_id: UUID of the session
+        idle_duration: How long session was idle
+        agent_id: Always None for session events
+        event_type: Always "session_resume"
+    """
+
+    timestamp: datetime
+    session_id: str
+    idle_duration: timedelta
+    agent_id: Optional[str] = None
+    event_type: str = field(default="session_resume", repr=False)
+
+
 # Type alias for all event types
-SessionEventType = Union[MessageEvent, ToolUseEvent, ToolResultEvent, ErrorEvent]
+SessionEventType = Union[
+    MessageEvent,
+    ToolUseEvent,
+    ToolResultEvent,
+    ErrorEvent,
+    SessionStartEvent,
+    SessionEndEvent,
+    SessionIdleEvent,
+    SessionResumeEvent,
+]
 
 
 def truncate_tool_input(
