@@ -15,12 +15,70 @@ from .models import (
 # Markdown Export
 # ============================================================================
 
+def tool_call_to_markdown(tool_use: ToolUseBlock, tool_result: Optional[ToolResultBlock] = None) -> str:
+    """Render a tool call (request + result) as a single markdown block."""
+    lines = []
+
+    lines.append(f"**🔧 {tool_use.name}**")
+
+    # Format input based on tool type
+    if tool_use.name == "Bash":
+        cmd = tool_use.input.get("command", "")
+        lines.append("```bash")
+        lines.append(cmd)
+        lines.append("```")
+    elif tool_use.name in ("Read", "Write", "Edit"):
+        path = tool_use.input.get("file_path", "")
+        lines.append(f"`{path}`")
+        if tool_use.name == "Edit":
+            old = tool_use.input.get("old_string", "")[:100]
+            new = tool_use.input.get("new_string", "")[:100]
+            lines.append(f"  - old: `{old}...`")
+            lines.append(f"  - new: `{new}...`")
+    elif tool_use.name in ("Glob", "Grep"):
+        pattern = tool_use.input.get("pattern", "")
+        lines.append(f"Pattern: `{pattern}`")
+    elif tool_use.name == "Task":
+        prompt = tool_use.input.get("prompt", "")[:200]
+        subagent = tool_use.input.get("subagent_type", "")
+        lines.append(f"Type: {subagent}")
+        lines.append(f"Prompt: {prompt}...")
+    else:
+        # Generic JSON display
+        lines.append("```json")
+        lines.append(json.dumps(tool_use.input, indent=2)[:500])
+        lines.append("```")
+
+    # Add result if available
+    if tool_result:
+        status = "❌ Error" if tool_result.is_error else "✓"
+        lines.append(f"**Result** {status}")
+        content = tool_result.content[:1000]
+        if len(tool_result.content) > 1000:
+            content += "\n... [truncated]"
+        lines.append("```")
+        lines.append(content)
+        lines.append("```")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def message_to_markdown(
     msg: Message,
     include_tools: bool = True,
-    include_metadata: bool = False
+    include_metadata: bool = False,
+    tool_results_map: Optional[Dict[str, ToolResultBlock]] = None
 ) -> str:
-    """Convert a message to Markdown format."""
+    """
+    Convert a message to Markdown format.
+
+    Args:
+        msg: The message to convert
+        include_tools: Whether to include tool calls
+        include_metadata: Whether to include cwd/branch metadata
+        tool_results_map: Map of tool_use_id -> ToolResultBlock for pairing
+    """
     lines = []
 
     # Header with role and timestamp
@@ -49,6 +107,9 @@ def message_to_markdown(
         lines.append(f"*{' | '.join(meta_parts)}*")
         lines.append("")
 
+    if tool_results_map is None:
+        tool_results_map = {}
+
     for block in msg.content:
         if isinstance(block, TextBlock):
             text = block.text.strip()
@@ -57,46 +118,13 @@ def message_to_markdown(
                 lines.append("")
 
         elif isinstance(block, ToolUseBlock) and include_tools:
-            lines.append(f"**🔧 {block.name}**")
-            # Format input based on tool type
-            if block.name == "Bash":
-                cmd = block.input.get("command", "")
-                lines.append("```bash")
-                lines.append(cmd)
-                lines.append("```")
-            elif block.name in ("Read", "Write", "Edit"):
-                path = block.input.get("file_path", "")
-                lines.append(f"`{path}`")
-                if block.name == "Edit":
-                    old = block.input.get("old_string", "")[:100]
-                    new = block.input.get("new_string", "")[:100]
-                    lines.append(f"  - old: `{old}...`")
-                    lines.append(f"  - new: `{new}...`")
-            elif block.name in ("Glob", "Grep"):
-                pattern = block.input.get("pattern", "")
-                lines.append(f"Pattern: `{pattern}`")
-            elif block.name == "Task":
-                prompt = block.input.get("prompt", "")[:200]
-                subagent = block.input.get("subagent_type", "")
-                lines.append(f"Type: {subagent}")
-                lines.append(f"Prompt: {prompt}...")
-            else:
-                # Generic JSON display
-                lines.append("```json")
-                lines.append(json.dumps(block.input, indent=2)[:500])
-                lines.append("```")
-            lines.append("")
+            # Look up paired result
+            result = tool_results_map.get(block.id)
+            lines.append(tool_call_to_markdown(block, result))
 
         elif isinstance(block, ToolResultBlock) and include_tools:
-            status = "❌ Error" if block.is_error else "✓"
-            lines.append(f"**Result** {status}")
-            content = block.content[:1000]
-            if len(block.content) > 1000:
-                content += "\n... [truncated]"
-            lines.append("```")
-            lines.append(content)
-            lines.append("```")
-            lines.append("")
+            # Skip - results are now rendered with their tool_use
+            pass
 
     return "\n".join(lines)
 
@@ -107,9 +135,32 @@ def thread_to_markdown(
     include_metadata: bool = False
 ) -> str:
     """Convert a list of messages to Markdown."""
+    # Build map of tool_use_id -> ToolResultBlock for pairing
+    tool_results_map: Dict[str, ToolResultBlock] = {}
+    for msg in messages:
+        for block in msg.content:
+            if isinstance(block, ToolResultBlock):
+                tool_results_map[block.tool_use_id] = block
+
     parts = []
     for msg in messages:
-        parts.append(message_to_markdown(msg, include_tools, include_metadata))
+        # Skip messages that only contain tool results (no text or tool_use)
+        has_text = any(isinstance(b, TextBlock) and b.text.strip() for b in msg.content)
+        has_tool_use = any(isinstance(b, ToolUseBlock) for b in msg.content)
+        has_only_tool_results = (
+            not has_text and
+            not has_tool_use and
+            any(isinstance(b, ToolResultBlock) for b in msg.content)
+        )
+
+        if has_only_tool_results:
+            continue
+
+        md = message_to_markdown(msg, include_tools, include_metadata, tool_results_map)
+        # Only add non-empty messages
+        if md.strip():
+            parts.append(md)
+
     return "\n---\n\n".join(parts)
 
 
