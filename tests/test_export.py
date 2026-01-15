@@ -59,10 +59,20 @@ class TestMessageToMarkdown:
         assert "Read" in md
         assert "file_path" in md or "/home/user/project/main.py" in md
 
-    def test_tool_result_formatting(self, user_message_with_tool_result):
-        """Should format tool result blocks."""
-        md = message_to_markdown(user_message_with_tool_result, include_tools=True)
+    def test_tool_result_formatting(self, assistant_message_with_tool, user_message_with_tool_result):
+        """Tool results should be rendered with their tool_use when map is provided."""
+        # Build tool_results_map like thread_to_markdown does
+        tool_result = user_message_with_tool_result.tool_results[0]
+        tool_results_map = {tool_result.tool_use_id: tool_result}
+
+        # Render the assistant message with the map
+        md = message_to_markdown(
+            assistant_message_with_tool,
+            include_tools=True,
+            tool_results_map=tool_results_map
+        )
         assert "Result" in md
+        assert "def main" in md  # Result content
 
     def test_exclude_tools(self, assistant_message_with_tool):
         """include_tools=False should hide tools."""
